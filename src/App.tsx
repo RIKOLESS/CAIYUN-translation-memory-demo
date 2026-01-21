@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { translate, setLLMConfig, getLLMConfig, LLMConfig } from './services/llmService';
+import { translate, setLLMConfig, getLLMConfig, LLMConfig, TargetLanguage, TARGET_LANGUAGE_LABELS } from './services/llmService';
 import {
   Terminology,
   createTerminology,
@@ -43,6 +43,9 @@ function App() {
   
   // AI学习开关
   const [enableAILearning, setEnableAILearning] = useState(true);
+  
+  // 目标语言
+  const [targetLanguage, setTargetLanguage] = useState<TargetLanguage>('zh');
   
   // 活动标签页
   const [activeTab, setActiveTab] = useState<'translate' | 'terminology' | 'memory'>('translate');
@@ -93,7 +96,8 @@ function App() {
       const result = await translate(
         inputText,
         toMapping(terminology),
-        memoryContext
+        memoryContext,
+        targetLanguage
       );
       
       setTranslatedText(result.translation);
@@ -228,6 +232,20 @@ function App() {
         {activeTab === 'translate' && (
           <div className="translate-panel">
             <div className="translate-options">
+              <div className="language-selector">
+                <label>译文语言：</label>
+                <div className="language-buttons">
+                  {(Object.keys(TARGET_LANGUAGE_LABELS) as TargetLanguage[]).map((lang) => (
+                    <button
+                      key={lang}
+                      className={`lang-btn ${targetLanguage === lang ? 'active' : ''}`}
+                      onClick={() => setTargetLanguage(lang)}
+                    >
+                      {TARGET_LANGUAGE_LABELS[lang]}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <label className="checkbox-label">
                 <input
                   type="checkbox"
@@ -240,11 +258,11 @@ function App() {
             
             <div className="translate-area">
               <div className="input-section">
-                <label>原文</label>
+                <label>原文（任意语言）</label>
                 <textarea
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
-                  placeholder="输入要翻译的日文/英文文本..."
+                  placeholder="输入要翻译的文本（支持任意语言）..."
                   rows={12}
                 />
               </div>
@@ -255,7 +273,7 @@ function App() {
                   onClick={handleTranslate}
                   disabled={isTranslating}
                 >
-                  {isTranslating ? '翻译中...' : '翻译 →'}
+                  {isTranslating ? '翻译中...' : `翻译 → ${TARGET_LANGUAGE_LABELS[targetLanguage]}`}
                 </button>
                 {isLearning && (
                   <span className="learning-indicator">🧠 学习中...</span>
@@ -263,7 +281,7 @@ function App() {
               </div>
               
               <div className="output-section">
-                <label>译文</label>
+                <label>译文（{TARGET_LANGUAGE_LABELS[targetLanguage]}）</label>
                 <textarea
                   value={translatedText}
                   readOnly

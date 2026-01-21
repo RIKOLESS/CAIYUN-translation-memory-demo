@@ -107,6 +107,43 @@ export interface TranslateCharacterInfo {
   }>;
 }
 
+// 支持的目标语言
+export type TargetLanguage = 'zh' | 'en' | 'ja';
+
+export const TARGET_LANGUAGE_LABELS: Record<TargetLanguage, string> = {
+  zh: '中文',
+  en: 'English',
+  ja: '日本語'
+};
+
+// 根据目标语言获取语言描述
+function getLanguageDescription(lang: TargetLanguage): string {
+  const descriptions: Record<TargetLanguage, string> = {
+    zh: '流畅自然的中文',
+    en: '流畅自然的英文',
+    ja: '流畅自然的日文'
+  };
+  return descriptions[lang];
+}
+
+// 根据目标语言获取特殊翻译注意事项
+function getLanguageSpecificNotes(lang: TargetLanguage): string {
+  const notes: Record<TargetLanguage, string> = {
+    zh: `- 中文翻译要符合中文读者的阅读习惯
+- 对话使用中文标点符号（「」或""）
+- 敬语和称谓要符合中文表达习惯`,
+    en: `- 英文翻译要符合英语母语者的阅读习惯
+- 注意英文的时态一致性
+- 对话使用英文标点符号（双引号）
+- 人名可保留原文或音译`,
+    ja: `- 日文翻译要符合日语读者的阅读习惯
+- 注意敬语（です/ます、敬称）的正确使用
+- 对话使用日文标点符号（「」）
+- 注意主语省略和语序调整`
+  };
+  return notes[lang];
+}
+
 /**
  * 翻译文本
  */
@@ -117,11 +154,15 @@ export async function translate(
     characters: Record<string, TranslateCharacterInfo>;
     nameMappings: Record<string, string>;
     style?: string;
-  }
+  },
+  targetLanguage: TargetLanguage = 'zh'
 ): Promise<{ translation: string; rawResponse: string }> {
   
+  const targetLangDesc = getLanguageDescription(targetLanguage);
+  const langSpecificNotes = getLanguageSpecificNotes(targetLanguage);
+  
   // 构建系统提示
-  let systemPrompt = `你是专业的小说翻译专家，擅长将日文/英文小说翻译成流畅自然的中文。
+  let systemPrompt = `你是专业的小说翻译专家，擅长将各种语言的小说翻译成${targetLangDesc}。
 
 ## 核心原则
 - 忠实原文：不私自添加或省略任何内容
@@ -134,7 +175,10 @@ export async function translate(
 3. 人名、地名等专有名词翻译保持前后一致
 4. 注意角色性别，使用正确的人称代词
 5. 注意：有些角色有多重身份/别名，虽然名字不同但是同一个人
-6. 保留原文的情感色彩和文学性，不要过度意译或简化`;
+6. 保留原文的情感色彩和文学性，不要过度意译或简化
+
+## 目标语言特殊要求
+${langSpecificNotes}`;
 
   // 添加术语库约束
   if (Object.keys(terminology).length > 0) {
