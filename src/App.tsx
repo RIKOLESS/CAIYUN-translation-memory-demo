@@ -89,8 +89,8 @@ function App() {
     setError(null);
 
     try {
-      // 获取记忆上下文
-      const memoryContext = await getMemoryContext(workId);
+      // 获取记忆上下文（传入当前文本，智能过滤只返回相关记忆）
+      const memoryContext = await getMemoryContext(workId, inputText);
       
       // 执行翻译
       const result = await translate(

@@ -25,8 +25,11 @@ export interface MemoryContext {
 /**
  * 获取作品的记忆上下文（用于翻译）
  * 包含别名和名称变体信息
+ * 
+ * @param workId 作品ID
+ * @param currentText 当前要翻译的文本（可选，用于智能过滤只传入相关记忆）
  */
-export async function getMemoryContext(workId: string): Promise<MemoryContext> {
+export async function getMemoryContext(workId: string, currentText?: string): Promise<MemoryContext> {
   const memory = await getWorkMemory(workId);
   
   if (!memory) {
@@ -36,7 +39,96 @@ export async function getMemoryContext(workId: string): Promise<MemoryContext> {
     };
   }
   
-  // 转换为翻译所需的格式（包含别名和名称变体）
+  // 如果提供了当前文本，进行智能过滤
+  if (currentText) {
+    return filterRelevantMemory(memory, currentText);
+  }
+  
+  // 未提供文本时，返回全部记忆（向后兼容）
+  return convertFullMemory(memory);
+}
+
+/**
+ * 智能过滤：只返回当前文本相关的记忆
+ * 通过别名反向索引，即使文本中只提到 nickname 也能找到完整角色信息
+ */
+function filterRelevantMemory(memory: WorkMemory, text: string): MemoryContext {
+  const relevantCharacters: Record<string, TranslateCharacterInfo> = {};
+  const relevantNameMappings: Record<string, string> = {};
+  
+  // 收集文本中出现的所有"主角色名"
+  const mentionedPrimaryNames = new Set<string>();
+  
+  // 1. 直接匹配角色主名
+  for (const name of Object.keys(memory.characters)) {
+    if (text.includes(name)) {
+      mentionedPrimaryNames.add(name);
+    }
+  }
+  
+  // 2. 通过别名反向索引找主名（关键：nickname → 主角色）
+  if (memory.aliasIndex) {
+    for (const [alias, primaryName] of Object.entries(memory.aliasIndex)) {
+      if (text.includes(alias)) {
+        mentionedPrimaryNames.add(primaryName);
+      }
+    }
+  }
+  
+  // 3. 检查 nameMappings 中的原文，如果匹配也尝试关联到角色
+  for (const original of Object.keys(memory.nameMappings)) {
+    if (text.includes(original)) {
+      // 直接加入相关映射
+      relevantNameMappings[original] = memory.nameMappings[original];
+      
+      // 尝试通过别名索引找到关联的角色
+      if (memory.aliasIndex && memory.aliasIndex[original]) {
+        mentionedPrimaryNames.add(memory.aliasIndex[original]);
+      }
+    }
+  }
+  
+  // 4. 为相关角色构建完整信息
+  for (const name of mentionedPrimaryNames) {
+    const info = memory.characters[name];
+    if (!info) continue;
+    
+    const charInfo: TranslateCharacterInfo = {
+      gender: info.gender,
+      traits: info.traits
+    };
+    
+    if (info.aliases && info.aliases.length > 0) {
+      charInfo.aliases = info.aliases;
+    }
+    
+    if (info.nameVariants && info.nameVariants.length > 0) {
+      charInfo.nameVariants = info.nameVariants.map(v => ({
+        original: v.original,
+        translation: v.translation,
+        type: v.type
+      }));
+      
+      // 同时将该角色的所有名称变体加入映射
+      for (const v of info.nameVariants) {
+        relevantNameMappings[v.original] = v.translation;
+      }
+    }
+    
+    relevantCharacters[name] = charInfo;
+  }
+  
+  return {
+    characters: relevantCharacters,
+    nameMappings: relevantNameMappings,
+    style: memory.style  // 风格总是传入
+  };
+}
+
+/**
+ * 转换完整记忆（不过滤）
+ */
+function convertFullMemory(memory: WorkMemory): MemoryContext {
   const characters: Record<string, TranslateCharacterInfo> = {};
   
   for (const [name, info] of Object.entries(memory.characters)) {
@@ -45,12 +137,10 @@ export async function getMemoryContext(workId: string): Promise<MemoryContext> {
       traits: info.traits
     };
     
-    // 添加别名信息
     if (info.aliases && info.aliases.length > 0) {
       charInfo.aliases = info.aliases;
     }
     
-    // 添加名称变体信息
     if (info.nameVariants && info.nameVariants.length > 0) {
       charInfo.nameVariants = info.nameVariants.map(v => ({
         original: v.original,
