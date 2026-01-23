@@ -157,7 +157,8 @@ function buildChinesePrompt(
   prompt += `\n\n## 输出要求
 - 直接输出翻译结果，不要添加任何解释、注释或说明
 - 不要在译文中添加原文没有的内容
-- 不要省略原文中的任何内容`;
+- 不要省略原文中的任何内容
+- 不要使用markdown格式（如**粗体**、*斜体*、# 标题等），输出纯文本`;
 
   return prompt;
 }
@@ -201,7 +202,8 @@ function buildEnglishPrompt(
   prompt += `\n\n## Output Requirements
 - Output only the translation, no explanations or notes
 - Do not add content not in the original
-- Do not omit any content from the original`;
+- Do not omit any content from the original
+- Do not use markdown formatting (e.g., **bold**, *italic*, # headers) - output plain text only`;
 
   return prompt;
 }
@@ -245,7 +247,8 @@ function buildJapanesePrompt(
   prompt += `\n\n## 出力要件
 - 翻訳のみを出力し、説明や注釈は不要
 - 原文にない内容を追加しない
-- 原文の内容を省略しない`;
+- 原文の内容を省略しない
+- マークダウン形式を使用しない（**太字**、*斜体*、# 見出しなど）、プレーンテキストのみ出力`;
 
   return prompt;
 }
