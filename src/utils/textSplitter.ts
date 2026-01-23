@@ -43,7 +43,6 @@ export function splitTextIntoChunks(
   
   let currentChunk = '';
   let currentStartOffset = 0;
-  let processedLength = 0;
   
   for (let i = 0; i < paragraphs.length; i++) {
     const para = paragraphs[i].trim();
@@ -70,9 +69,7 @@ export function splitTextIntoChunks(
         currentChunk = para;
       } else {
         // 当前块太小，但加上新段落会超过最大值
-        // 必须先保存当前块，避免合并后超限
-        
-        // 先保存当前块（即使小于 minSize，也不能让合并后超限）
+        // 先保存当前块（即使太小），避免合并后超过 maxSize
         if (currentChunk) {
           chunks.push({
             index: chunks.length,
@@ -82,11 +79,12 @@ export function splitTextIntoChunks(
             endOffset: currentStartOffset + currentChunk.length
           });
           currentStartOffset += currentChunk.length + 2;
+          currentChunk = '';
         }
         
-        // 处理新段落
+        // 然后处理新段落
         if (para.length > opts.maxSize) {
-          // 超长段落按句子切割
+          // 对超长段落按句子切割
           const sentenceChunks = splitBySentences(para, opts);
           for (const sc of sentenceChunks) {
             chunks.push({
@@ -98,9 +96,8 @@ export function splitTextIntoChunks(
             });
             currentStartOffset += sc.length;
           }
-          currentChunk = '';
         } else {
-          // 新段落作为新块的开始
+          // 用新段落开始新的 chunk（而不是合并）
           currentChunk = para;
         }
       }
@@ -220,4 +217,3 @@ export function previewSplit(
     }))
   };
 }
-
