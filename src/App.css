@@ -795,6 +795,444 @@
   background: var(--accent-hover);
 }
 
+/* ==================== 批量翻译面板 ==================== */
+
+.batch-panel {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.batch-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.batch-desc {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* 输入区域 */
+.batch-input-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.batch-input-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.batch-input-header label {
+  font-weight: 500;
+}
+
+.upload-btn {
+  background: var(--bg-tertiary);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.upload-btn:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent);
+}
+
+.batch-input-section textarea {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 14px;
+  color: var(--text-primary);
+  resize: vertical;
+  min-height: 200px;
+}
+
+.batch-input-section textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 字符上限设置 */
+.chunk-size-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.chunk-size-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chunk-size-input label {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.chunk-size-input input {
+  width: 100px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: center;
+}
+
+.chunk-size-input input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.chunk-size-input .unit {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.chunk-size-hints {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hint-title {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.hint-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.hint-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.hint-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chunk-size-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 预览信息 */
+.batch-preview {
+  display: flex;
+  gap: 20px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.batch-preview span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 选项区 */
+.batch-options {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* 控制按钮 */
+.batch-controls {
+  display: flex;
+  gap: 12px;
+}
+
+.batch-start-btn,
+.batch-pause-btn,
+.batch-resume-btn,
+.batch-stop-btn,
+.batch-reset-btn {
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.batch-start-btn {
+  background: var(--accent);
+  border: none;
+  color: white;
+}
+
+.batch-start-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.batch-start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.batch-pause-btn {
+  background: #f59e0b;
+  border: none;
+  color: white;
+}
+
+.batch-pause-btn:hover {
+  background: #d97706;
+}
+
+.batch-resume-btn {
+  background: #10b981;
+  border: none;
+  color: white;
+}
+
+.batch-resume-btn:hover {
+  background: #059669;
+}
+
+.batch-stop-btn {
+  background: #ef4444;
+  border: none;
+  color: white;
+}
+
+.batch-stop-btn:hover {
+  background: #dc2626;
+}
+
+.batch-reset-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.batch-reset-btn:hover {
+  background: var(--bg-secondary);
+}
+
+/* 进度条 */
+.batch-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-bar {
+  height: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #60a5fa);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 当前翻译 */
+.batch-current {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.batch-current h4 {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+
+.current-chunk {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+/* 输出区域 */
+.batch-output-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.batch-output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.batch-output-header h4 {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.download-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.download-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.batch-output-section textarea {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 14px;
+  color: var(--text-primary);
+  resize: vertical;
+  min-height: 200px;
+}
+
+/* 执行日志 */
+.batch-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.batch-logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.batch-logs-header h4 {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.log-container {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.batch-log-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.batch-log-item:last-child {
+  border-bottom: none;
+}
+
+.batch-log-item.error {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.log-header {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.log-round {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.log-time {
+  color: var(--text-secondary);
+}
+
+.log-duration {
+  color: var(--text-secondary);
+}
+
+.log-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.log-learned {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+
+.learned-item {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+
+.log-error {
+  color: #ef4444;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+/* 错误提示 */
+.batch-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  padding: 16px;
+  color: #ef4444;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 /* 响应式 */
 @media (max-width: 900px) {
   .translate-area {
@@ -814,6 +1252,16 @@
   .header-right {
     width: 100%;
     justify-content: space-between;
+  }
+  
+  .batch-options {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .batch-preview {
+    flex-direction: column;
+    gap: 8px;
   }
 }
 

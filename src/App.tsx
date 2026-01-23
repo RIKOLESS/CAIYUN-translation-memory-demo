@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { translate, setLLMConfig, getLLMConfig, LLMConfig, TargetLanguage, TARGET_LANGUAGE_LABELS } from './services/llmService';
 import {
   Terminology,
@@ -15,6 +15,17 @@ import {
   LearnResult
 } from './services/memoryAgent';
 import { WorkMemory, CharacterInfo, getAllMemories, deleteWorkMemory, getStorageStats } from './storage/indexedDB';
+import {
+  batchTranslate,
+  createBatchController,
+  formatLogsToText,
+  downloadTextFile,
+  BatchResult,
+  BatchStatus,
+  RoundLog,
+  BatchController
+} from './services/batchTranslator';
+import { previewSplit } from './utils/textSplitter';
 import './App.css';
 
 function App() {
@@ -48,7 +59,17 @@ function App() {
   const [targetLanguage, setTargetLanguage] = useState<TargetLanguage>('zh');
   
   // 活动标签页
-  const [activeTab, setActiveTab] = useState<'translate' | 'terminology' | 'memory'>('translate');
+  const [activeTab, setActiveTab] = useState<'translate' | 'terminology' | 'memory' | 'batch'>('translate');
+  
+  // 批量翻译状态
+  const [batchInputText, setBatchInputText] = useState('');
+  const [batchStatus, setBatchStatus] = useState<BatchStatus>('idle');
+  const [batchResult, setBatchResult] = useState<BatchResult | null>(null);
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+  const [batchCurrentChunk, setBatchCurrentChunk] = useState('');
+  const [batchLogs, setBatchLogs] = useState<RoundLog[]>([]);
+  const batchControllerRef = useRef<BatchController | null>(null);
+  const [chunkSizeLimit, setChunkSizeLimit] = useState(2000); // 每轮字符上限
 
   // 初始化
   useEffect(() => {
@@ -169,6 +190,75 @@ function App() {
     setShowSettings(false);
   }
 
+  // 开始批量翻译
+  async function handleStartBatch() {
+    if (!batchInputText.trim()) {
+      return;
+    }
+
+    // 创建控制器
+    const controller = createBatchController();
+    batchControllerRef.current = controller;
+
+    // 重置状态
+    setBatchStatus('running');
+    setBatchResult(null);
+    setBatchProgress({ current: 0, total: 0 });
+    setBatchLogs([]);
+    setBatchCurrentChunk('');
+
+    try {
+      const result = await batchTranslate(
+        batchInputText,
+        {
+          workId,
+          targetLanguage,
+          terminology: toMapping(terminology),
+          enableLearning: enableAILearning,
+          splitOptions: {
+            targetSize: chunkSizeLimit,
+            minSize: Math.floor(chunkSizeLimit * 0.6),
+            maxSize: Math.floor(chunkSizeLimit * 1.25)
+          }
+        },
+        controller,
+        // 进度回调
+        (current, total, chunk, translation, log) => {
+          setBatchProgress({ current, total });
+          setBatchCurrentChunk(chunk.text);
+          setBatchLogs(prev => [...prev, log]);
+          setBatchResult(prev => prev ? {
+            ...prev,
+            completedChunks: current,
+            translatedText: prev.translatedText + (prev.translatedText ? '\n\n' : '') + translation
+          } : {
+            status: 'running',
+            totalChunks: total,
+            completedChunks: current,
+            translatedText: translation,
+            logs: [log],
+            startTime: new Date()
+          });
+          
+          // 刷新记忆显示
+          loadMemory();
+          loadAllMemories();
+        }
+      );
+
+      setBatchResult(result);
+      setBatchStatus(result.status);
+      
+      // 最终刷新记忆
+      await loadMemory();
+      await loadAllMemories();
+      
+    } catch (err) {
+      setBatchStatus('error');
+      console.error('批量翻译失败:', err);
+    }
+  }
+
   // 更新设置
   function updateConfig(updates: Partial<LLMConfig>) {
     setLlmConfigState(prev => ({ ...prev, ...updates }));
@@ -213,6 +303,12 @@ function App() {
             onClick={() => setActiveTab('translate')}
           >
             📝 翻译
+          </button>
+          <button
+            className={`tab ${activeTab === 'batch' ? 'active' : ''}`}
+            onClick={() => setActiveTab('batch')}
+          >
+            📄 批量翻译
           </button>
           <button
             className={`tab ${activeTab === 'terminology' ? 'active' : ''}`}
@@ -319,6 +415,321 @@ function App() {
                 >
                   清除日志
                 </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 批量翻译面板 */}
+        {activeTab === 'batch' && (
+          <div className="batch-panel">
+            <div className="batch-header">
+              <h3>📄 批量翻译</h3>
+              <p className="batch-desc">上传全文或粘贴文本，自动分段翻译并持续学习记忆</p>
+            </div>
+
+            {/* 输入区域 */}
+            <div className="batch-input-section">
+              <div className="batch-input-header">
+                <label>原文（粘贴全文或上传txt文件）</label>
+                <input
+                  type="file"
+                  accept=".txt"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        setBatchInputText(event.target?.result as string || '');
+                      };
+                      reader.readAsText(file);
+                    }
+                  }}
+                  style={{ display: 'none' }}
+                  id="batch-file-input"
+                />
+                <button 
+                  className="upload-btn"
+                  onClick={() => document.getElementById('batch-file-input')?.click()}
+                >
+                  📁 上传txt文件
+                </button>
+              </div>
+              <textarea
+                value={batchInputText}
+                onChange={(e) => setBatchInputText(e.target.value)}
+                placeholder="粘贴要翻译的全文..."
+                rows={10}
+                disabled={batchStatus === 'running'}
+              />
+              
+              {/* 字符上限设置 */}
+              <div className="chunk-size-setting">
+                <div className="chunk-size-input">
+                  <label>每轮字符上限：</label>
+                  <input
+                    type="number"
+                    value={chunkSizeLimit}
+                    onChange={(e) => setChunkSizeLimit(Math.max(500, Math.min(10000, parseInt(e.target.value) || 2000)))}
+                    min={500}
+                    max={10000}
+                    step={100}
+                    disabled={batchStatus === 'running'}
+                  />
+                  <span className="unit">字符</span>
+                </div>
+                <div className="chunk-size-hints">
+                  <span className="hint-title">推荐值：</span>
+                  <button 
+                    className="hint-btn" 
+                    onClick={() => setChunkSizeLimit(1500)}
+                    disabled={batchStatus === 'running'}
+                  >
+                    中文 1500
+                  </button>
+                  <button 
+                    className="hint-btn" 
+                    onClick={() => setChunkSizeLimit(2000)}
+                    disabled={batchStatus === 'running'}
+                  >
+                    日/韩文 2000
+                  </button>
+                  <button 
+                    className="hint-btn" 
+                    onClick={() => setChunkSizeLimit(4500)}
+                    disabled={batchStatus === 'running'}
+                  >
+                    英文 4500
+                  </button>
+                </div>
+                <div className="chunk-size-note">
+                  💡 不同语言的 token 效率不同：中文约 1.5字符/token，英文约 4字符/token
+                </div>
+              </div>
+              
+              {/* 预览信息 */}
+              {batchInputText && batchStatus === 'idle' && (
+                <div className="batch-preview">
+                  {(() => {
+                    const preview = previewSplit(batchInputText, { 
+                      targetSize: chunkSizeLimit,
+                      minSize: Math.floor(chunkSizeLimit * 0.6),
+                      maxSize: Math.floor(chunkSizeLimit * 1.25)
+                    });
+                    return (
+                      <>
+                        <span>📊 共 {preview.totalChars.toLocaleString()} 字符</span>
+                        <span>📦 将分为 {preview.chunkCount} 轮翻译</span>
+                        <span>📏 平均每轮 {preview.avgChunkSize} 字符</span>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+
+            {/* 选项和控制 */}
+            <div className="batch-options">
+              <div className="language-selector">
+                <label>译文语言：</label>
+                <div className="language-buttons">
+                  {(Object.keys(TARGET_LANGUAGE_LABELS) as TargetLanguage[]).map((lang) => (
+                    <button
+                      key={lang}
+                      className={`lang-btn ${targetLanguage === lang ? 'active' : ''}`}
+                      onClick={() => setTargetLanguage(lang)}
+                      disabled={batchStatus === 'running'}
+                    >
+                      {TARGET_LANGUAGE_LABELS[lang]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={enableAILearning}
+                  onChange={(e) => setEnableAILearning(e.target.checked)}
+                  disabled={batchStatus === 'running'}
+                />
+                <span>翻译时持续学习记忆</span>
+              </label>
+            </div>
+
+            {/* 控制按钮 */}
+            <div className="batch-controls">
+              {batchStatus === 'idle' && (
+                <button
+                  className="batch-start-btn"
+                  onClick={handleStartBatch}
+                  disabled={!batchInputText.trim()}
+                >
+                  ▶️ 开始批量翻译
+                </button>
+              )}
+              
+              {batchStatus === 'running' && (
+                <>
+                  <button
+                    className="batch-pause-btn"
+                    onClick={() => batchControllerRef.current?.pause()}
+                  >
+                    ⏸️ 暂停
+                  </button>
+                  <button
+                    className="batch-stop-btn"
+                    onClick={() => batchControllerRef.current?.stop()}
+                  >
+                    ⏹️ 停止
+                  </button>
+                </>
+              )}
+              
+              {batchStatus === 'paused' && (
+                <>
+                  <button
+                    className="batch-resume-btn"
+                    onClick={() => batchControllerRef.current?.resume()}
+                  >
+                    ▶️ 继续
+                  </button>
+                  <button
+                    className="batch-stop-btn"
+                    onClick={() => batchControllerRef.current?.stop()}
+                  >
+                    ⏹️ 停止
+                  </button>
+                </>
+              )}
+              
+              {(batchStatus === 'completed' || batchStatus === 'error') && (
+                <button
+                  className="batch-reset-btn"
+                  onClick={() => {
+                    setBatchStatus('idle');
+                    setBatchResult(null);
+                    setBatchProgress({ current: 0, total: 0 });
+                    setBatchLogs([]);
+                    setBatchCurrentChunk('');
+                  }}
+                >
+                  🔄 重新开始
+                </button>
+              )}
+            </div>
+
+            {/* 进度条 */}
+            {batchStatus !== 'idle' && batchProgress.total > 0 && (
+              <div className="batch-progress">
+                <div className="progress-bar">
+                  <div 
+                    className="progress-fill"
+                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                  />
+                </div>
+                <div className="progress-text">
+                  进度：{batchProgress.current} / {batchProgress.total} 
+                  ({Math.round((batchProgress.current / batchProgress.total) * 100)}%)
+                  {batchStatus === 'running' && ' 翻译中...'}
+                  {batchStatus === 'paused' && ' 已暂停'}
+                  {batchStatus === 'completed' && ' ✅ 完成'}
+                  {batchStatus === 'error' && ' ❌ 出错'}
+                </div>
+              </div>
+            )}
+
+            {/* 当前翻译内容 */}
+            {batchCurrentChunk && batchStatus === 'running' && (
+              <div className="batch-current">
+                <h4>当前翻译片段</h4>
+                <div className="current-chunk">{batchCurrentChunk.slice(0, 200)}...</div>
+              </div>
+            )}
+
+            {/* 译文输出 */}
+            {batchResult && batchResult.translatedText && (
+              <div className="batch-output-section">
+                <div className="batch-output-header">
+                  <h4>译文输出</h4>
+                  <button
+                    className="download-btn"
+                    onClick={() => downloadTextFile(
+                      batchResult.translatedText,
+                      `${workId}-translation-${targetLanguage}.txt`
+                    )}
+                  >
+                    📥 下载译文.txt
+                  </button>
+                </div>
+                <textarea
+                  value={batchResult.translatedText}
+                  readOnly
+                  rows={10}
+                />
+              </div>
+            )}
+
+            {/* 执行日志 */}
+            {batchLogs.length > 0 && (
+              <div className="batch-logs">
+                <div className="batch-logs-header">
+                  <h4>📋 执行日志</h4>
+                  {batchResult && (
+                    <button
+                      className="download-btn"
+                      onClick={() => downloadTextFile(
+                        formatLogsToText(batchResult, {
+                          workId,
+                          targetLanguage,
+                          terminology: toMapping(terminology),
+                          enableLearning: enableAILearning
+                        }),
+                        `${workId}-translation-log.txt`
+                      )}
+                    >
+                      📥 下载日志.txt
+                    </button>
+                  )}
+                </div>
+                <div className="log-container">
+                  {batchLogs.map((log, index) => (
+                    <div key={index} className={`batch-log-item ${log.error ? 'error' : ''}`}>
+                      <div className="log-header">
+                        <span className="log-round">第 {log.round} 轮</span>
+                        <span className="log-time">{log.timestamp.toLocaleTimeString()}</span>
+                        <span className="log-duration">{(log.duration / 1000).toFixed(1)}s</span>
+                      </div>
+                      <div className="log-stats">
+                        <span>输入: {log.inputChars}字符</span>
+                        <span>输出: {log.outputChars}字符</span>
+                        <span>
+                          记忆: {log.memoryBefore.characters}→{log.memoryAfter.characters}角色, 
+                          {log.memoryBefore.nameMappings}→{log.memoryAfter.nameMappings}映射
+                        </span>
+                      </div>
+                      {log.learnedItems.length > 0 && (
+                        <div className="log-learned">
+                          {log.learnedItems.map((item, i) => (
+                            <div key={i} className="learned-item">{item}</div>
+                          ))}
+                        </div>
+                      )}
+                      {log.error && (
+                        <div className="log-error">❌ {log.error}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 错误提示 */}
+            {batchResult?.error && (
+              <div className="batch-error">
+                ❌ 翻译在第 {batchResult.error.round} 轮出错: {batchResult.error.message}
+                <br />
+                已完成的译文已保存，可以下载。
               </div>
             )}
           </div>
