@@ -145,11 +145,13 @@ function buildChinesePrompt(
 4. 注意角色性别，使用正确的人称代词
 5. 注意：有些角色有多重身份/别名，虽然名字不同但是同一个人
 6. 保留原文的情感色彩和文学性，不要过度意译或简化
+7. 严格保持原文的换行格式，句子和段落的换行结构必须与原文一致
 
-## 目标语言特殊要求
-- 中文翻译要符合中文读者的阅读习惯
-- 对话使用中文标点符号（「」或""）
-- 敬语和称谓要符合中文表达习惯`;
+## 标点符号规范（必须遵守）
+- 对话引号：使用中文双引号 “”
+- 省略号：使用 ……
+- 破折号：使用 ——
+- 其他标点使用中文全角标点`;
 
   // 添加术语库和记忆信息
   prompt += buildContextSection(terminology, memory, 'zh');
@@ -158,6 +160,7 @@ function buildChinesePrompt(
 - 直接输出翻译结果，不要添加任何解释、注释或说明
 - 不要在译文中添加原文没有的内容
 - 不要省略原文中的任何内容
+- 严格保持原文的换行格式
 - 不要使用markdown格式（如**粗体**、*斜体*、# 标题等），输出纯文本`;
 
   return prompt;
@@ -189,6 +192,12 @@ function buildEnglishPrompt(
 4. Pay attention to character gender, use correct pronouns
 5. Note: Some characters have multiple identities/aliases - different names may refer to the same person
 6. Preserve the emotional color and literary quality, avoid over-interpretation or simplification
+7. Strictly preserve the original line break format - sentence and paragraph breaks must match the original
+
+## Punctuation Rules (MUST follow)
+- Dialogue quotes: Use "" or '' as appropriate
+- Ellipsis: Use ...
+- Dash: Use —
 
 ## CRITICAL - Language Purity
 - The translation MUST be entirely in English
@@ -203,13 +212,14 @@ function buildEnglishPrompt(
 - Output only the translation, no explanations or notes
 - Do not add content not in the original
 - Do not omit any content from the original
+- Strictly preserve the original line break format
 - Do not use markdown formatting (e.g., **bold**, *italic*, # headers) - output plain text only`;
 
   return prompt;
 }
 
 /**
- * 构建日文翻译Prompt（目标语言为日文时使用）
+ * 構建日文翻译Prompt（目标语言为日文时使用）
  * 整个prompt用日文写，让模型保持日文思维
  */
 function buildJapanesePrompt(
@@ -234,6 +244,12 @@ function buildJapanesePrompt(
 4. キャラクターの性別に注意し、正しい人称代名詞を使用する
 5. 注意：一部のキャラクターは複数のアイデンティティ/別名を持つ - 異なる名前が同一人物を指す場合がある
 6. 感情的な色彩と文学性を保持し、過度な意訳や簡略化を避ける
+7. 原文の改行形式を厳密に保持すること - 文と段落の改行は原文と一致させる
+
+## 句読点規則（必須）
+- 会話の引用符：「」または『』を使用
+- 省略記号：……を使用
+- ダッシュ：——を使用
 
 ## 重要 - 言語の純粋性
 - 翻訳は完全に日本語でなければならない
@@ -248,6 +264,7 @@ function buildJapanesePrompt(
 - 翻訳のみを出力し、説明や注釈は不要
 - 原文にない内容を追加しない
 - 原文の内容を省略しない
+- 原文の改行形式を厳密に保持する
 - マークダウン形式を使用しない（**太字**、*斜体*、# 見出しなど）、プレーンテキストのみ出力`;
 
   return prompt;

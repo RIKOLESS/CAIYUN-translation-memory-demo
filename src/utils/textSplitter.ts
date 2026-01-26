@@ -97,7 +97,7 @@ export function splitTextIntoChunks(
             currentStartOffset += sc.length;
           }
         } else {
-          // 用新段落开始新的 chunk（而不是合并）
+          // 用新段落开始新的 chunk
           currentChunk = para;
         }
       }
@@ -217,3 +217,4 @@ export function previewSplit(
     }))
   };
 }
+
