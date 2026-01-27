@@ -22,6 +22,8 @@ export interface RoundLog {
   learnedItems: string[];  // AI学习日志
   duration: number;        // 耗时（毫秒）
   error?: string;
+  retried?: boolean;       // 是否重试过
+  skipped?: boolean;       // 是否跳过（失败后）
 }
 
 // 批量翻译结果
@@ -129,37 +131,72 @@ export async function batchTranslate(
       
       const chunk = chunks[i];
       const roundStartTime = Date.now();
+      const MAX_RETRIES = 1;  // 最多重试1次（共2次尝试）
       
-      try {
-        // 获取翻译前的记忆状态
-        const memoryBefore = await getMemoryStats(config.workId);
-        
-        // 获取相关记忆（智能过滤）
-        const memoryContext = await getMemoryContext(config.workId, chunk.text);
-        
-        // 执行翻译
-        const translateResult = await translate(
-          chunk.text,
-          config.terminology,
-          memoryContext,
-          config.targetLanguage
-        );
-        
-        translatedParts.push(translateResult.translation);
+      // 获取翻译前的记忆状态
+      const memoryBefore = await getMemoryStats(config.workId);
+      
+      let translateSuccess = false;
+      let translatedText = '';
+      let lastError: string | undefined;
+      let retried = false;
+      
+      // 重试逻辑
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          // 获取相关记忆（智能过滤）
+          const memoryContext = await getMemoryContext(config.workId, chunk.text);
+          
+          // 执行翻译
+          const translateResult = await translate(
+            chunk.text,
+            config.terminology,
+            memoryContext,
+            config.targetLanguage
+          );
+          
+          translatedText = translateResult.translation;
+          translateSuccess = true;
+          
+          if (attempt > 0) {
+            retried = true;  // 标记为重试成功
+          }
+          break;  // 成功则跳出重试循环
+          
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+          
+          if (attempt < MAX_RETRIES) {
+            // 等待1秒后重试
+            retried = true;
+            await sleep(1000);
+          }
+        }
+      }
+      
+      // 处理结果
+      let learnedItems: string[] = [];
+      let memoryAfter = memoryBefore;
+      
+      if (translateSuccess) {
+        // 翻译成功
+        translatedParts.push(translatedText);
         
         // 学习新内容
-        let learnedItems: string[] = [];
-        let memoryAfter = memoryBefore;
-        
         if (config.enableLearning) {
-          const learnResult = await learnFromTranslation(
-            config.workId,
-            chunk.text,
-            translateResult.translation,
-            { useAI: true }
-          );
-          learnedItems = learnResult.logs;
-          memoryAfter = await getMemoryStats(config.workId);
+          try {
+            const learnResult = await learnFromTranslation(
+              config.workId,
+              chunk.text,
+              translatedText,
+              { useAI: true }
+            );
+            learnedItems = learnResult.logs;
+            memoryAfter = await getMemoryStats(config.workId);
+          } catch (learnError) {
+            // 学习失败不影响翻译结果
+            learnedItems = [`⚠️ 学习失败: ${learnError instanceof Error ? learnError.message : String(learnError)}`];
+          }
         }
         
         // 记录日志
@@ -167,48 +204,50 @@ export async function batchTranslate(
           round: i + 1,
           timestamp: new Date(),
           inputChars: chunk.charCount,
-          outputChars: translateResult.translation.length,
+          outputChars: translatedText.length,
           memoryBefore,
           memoryAfter,
-          learnedItems,
-          duration: Date.now() - roundStartTime
+          learnedItems: retried ? [`⚠️ 重试后成功`, ...learnedItems] : learnedItems,
+          duration: Date.now() - roundStartTime,
+          retried
         };
         
         result.logs.push(roundLog);
         result.completedChunks = i + 1;
         result.translatedText = translatedParts.join('\n\n');
         
-        // 回调进度
         if (onProgress) {
-          onProgress(i + 1, chunks.length, chunk, translateResult.translation, roundLog);
+          onProgress(i + 1, chunks.length, chunk, translatedText, roundLog);
         }
         
-      } catch (error) {
-        // 翻译出错
-        const errorMessage = error instanceof Error ? error.message : String(error);
+      } else {
+        // 翻译失败，跳过该轮次
+        const skippedText = `[第${i + 1}轮翻译失败已跳过]`;
+        translatedParts.push(skippedText);
         
         const roundLog: RoundLog = {
           round: i + 1,
           timestamp: new Date(),
           inputChars: chunk.charCount,
           outputChars: 0,
-          memoryBefore: await getMemoryStats(config.workId),
-          memoryAfter: await getMemoryStats(config.workId),
-          learnedItems: [],
+          memoryBefore,
+          memoryAfter: memoryBefore,
+          learnedItems: [`❌ 重试后仍失败，已跳过`],
           duration: Date.now() - roundStartTime,
-          error: errorMessage
+          error: lastError,
+          retried: true,
+          skipped: true
         };
         
         result.logs.push(roundLog);
-        result.status = 'error';
-        result.error = { round: i + 1, message: errorMessage };
+        result.completedChunks = i + 1;
         result.translatedText = translatedParts.join('\n\n');
         
         if (onProgress) {
-          onProgress(i + 1, chunks.length, chunk, '', roundLog);
+          onProgress(i + 1, chunks.length, chunk, skippedText, roundLog);
         }
         
-        break;
+        // 不再 break，继续下一轮
       }
     }
     
@@ -252,19 +291,29 @@ export function formatLogsToText(
 ): string {
   const lines: string[] = [];
   
+  const skippedCount = result.logs.filter(l => l.skipped).length;
+  const retriedCount = result.logs.filter(l => l.retried && !l.skipped).length;
+  
   lines.push('========================================');
   lines.push('批量翻译日志');
   lines.push(`作品ID: ${config.workId}`);
   lines.push(`目标语言: ${config.targetLanguage === 'zh' ? '中文' : config.targetLanguage === 'en' ? 'English' : '日本語'}`);
   lines.push(`开始时间: ${result.startTime?.toLocaleString()}`);
   lines.push(`结束时间: ${result.endTime?.toLocaleString()}`);
-  lines.push(`总轮次: ${result.totalChunks} | 完成: ${result.completedChunks}`);
+  lines.push(`总轮次: ${result.totalChunks} | 完成: ${result.completedChunks}${skippedCount > 0 ? ` | 跳过: ${skippedCount}` : ''}${retriedCount > 0 ? ` | 重试成功: ${retriedCount}` : ''}`);
   lines.push(`状态: ${result.status === 'completed' ? '✅ 完成' : result.status === 'error' ? '❌ 出错' : result.status}`);
   lines.push('========================================');
   lines.push('');
   
   for (const log of result.logs) {
-    lines.push(`=== 第 ${log.round} 轮 (${log.round}/${result.totalChunks}) ===`);
+    let statusIcon = '✅';
+    if (log.skipped) {
+      statusIcon = '❌ [已跳过]';
+    } else if (log.retried) {
+      statusIcon = '⚠️ [重试成功]';
+    }
+    
+    lines.push(`=== 第 ${log.round} 轮 (${log.round}/${result.totalChunks}) ${statusIcon} ===`);
     lines.push(`[${log.timestamp.toLocaleTimeString()}] 输入: ${log.inputChars} 字符`);
     lines.push(`[${log.timestamp.toLocaleTimeString()}] 输出: ${log.outputChars} 字符`);
     lines.push(`[${log.timestamp.toLocaleTimeString()}] 耗时: ${(log.duration / 1000).toFixed(1)}s`);

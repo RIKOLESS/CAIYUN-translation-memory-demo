@@ -92,6 +92,15 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
   }
 
   const data = await response.json();
+  
+  // 防护：检查响应数据结构
+  if (!data) {
+    throw new Error('API返回空响应');
+  }
+  if (!data.choices || !Array.isArray(data.choices) || data.choices.length === 0) {
+    throw new Error(`API返回格式异常: ${JSON.stringify(data).slice(0, 200)}`);
+  }
+  
   return data.choices[0]?.message?.content || '';
 }
 
