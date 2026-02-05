@@ -486,10 +486,14 @@ export async function extractMemory(
 - "Shuichi" 是 "赤井秀一" 的名字（"秀一"的读音）
 - 区分：姓(lastName)、名(firstName)、昵称(nickname)、代号(codename)、头衔(title)
 
-### 3. 基本信息提取
-- 角色性别（根据he/she、先生/小姐等判断）
+### 3. 名称翻译【严格过滤】
+只记录专有名词（人名、地名、组织名、作品特有术语）。
+通用词汇不记录——换部小说翻译也一样的词，不该存。
+除人名外，不记录单字词。
+
+### 4. 角色基本信息
+- 角色性别（根据代词、称谓判断）
 - 角色性格特征
-- 名称翻译对应
 
 ## 已知信息
 ${JSON.stringify(existingMemory, null, 2)}
