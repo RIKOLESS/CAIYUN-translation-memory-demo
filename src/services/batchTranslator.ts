@@ -156,6 +156,19 @@ export async function batchTranslate(
           );
           
           translatedText = translateResult.translation;
+          
+          // 检测重复循环（>30个连续相同字符）
+          if (hasRepetitionLoop(translatedText)) {
+            if (attempt < MAX_RETRIES) {
+              // 检测到重复，重试一次
+              retried = true;
+              lastError = '检测到重复输出循环，重试中...';
+              await sleep(1000);
+              continue;  // 继续下一次尝试
+            }
+            // 已重试但仍有重复，接受结果（可能原文就重复）
+          }
+          
           translateSuccess = true;
           
           if (attempt > 0) {
@@ -207,7 +220,7 @@ export async function batchTranslate(
           outputChars: translatedText.length,
           memoryBefore,
           memoryAfter,
-          learnedItems: retried ? [`⚠️ 重试后成功`, ...learnedItems] : learnedItems,
+          learnedItems: retried ? [`⚠️ 重试后成功${lastError?.includes('重复') ? '（检测到重复循环）' : ''}`, ...learnedItems] : learnedItems,
           duration: Date.now() - roundStartTime,
           retried
         };
@@ -377,5 +390,12 @@ export function downloadTextFile(content: string, filename: string): void {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * 检测是否存在重复循环（同一字符连续出现超过30次）
+ */
+function hasRepetitionLoop(text: string): boolean {
+  return /(.)\1{30,}/.test(text);
 }
 
