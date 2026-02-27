@@ -118,7 +118,8 @@ function App() {
         inputText,
         toMapping(terminology),
         memoryContext,
-        targetLanguage
+        targetLanguage,
+        workId  // 火山引擎缓存用
       );
       
       setTranslatedText(result.translation);
@@ -639,6 +640,28 @@ function App() {
               </div>
             )}
 
+            {/* Token 统计 */}
+            {batchResult?.tokenStats && (
+              <div className="token-stats">
+                <div className="token-stats-row">
+                  <span className="token-label">翻译Agent:</span>
+                  <span>输入 {batchResult.tokenStats.translation.prompt_tokens.toLocaleString()}</span>
+                  <span>输出 {batchResult.tokenStats.translation.completion_tokens.toLocaleString()}</span>
+                  <span className="cached">缓存 {batchResult.tokenStats.translation.cached_tokens.toLocaleString()}</span>
+                </div>
+                <div className="token-stats-row">
+                  <span className="token-label">记忆Agent:</span>
+                  <span>输入 {batchResult.tokenStats.memory.prompt_tokens.toLocaleString()}</span>
+                  <span>输出 {batchResult.tokenStats.memory.completion_tokens.toLocaleString()}</span>
+                  <span className="cached">缓存 {batchResult.tokenStats.memory.cached_tokens.toLocaleString()}</span>
+                </div>
+                <div className="token-stats-total">
+                  总计: {(batchResult.tokenStats.translation.total_tokens + batchResult.tokenStats.memory.total_tokens).toLocaleString()} tokens
+                  {' '}(缓存命中 {(batchResult.tokenStats.translation.cached_tokens + batchResult.tokenStats.memory.cached_tokens).toLocaleString()})
+                </div>
+              </div>
+            )}
+
             {/* 当前翻译内容 */}
             {batchCurrentChunk && batchStatus === 'running' && (
               <div className="batch-current">
@@ -947,9 +970,10 @@ function App() {
               <select 
                 value={llmConfig.provider} 
                 onChange={(e) => {
-                  const provider = e.target.value as 'deepseek' | 'doubao' | 'openai';
+                  const provider = e.target.value as 'deepseek' | 'volcengine-deepseek' | 'doubao' | 'openai';
                   const presets: Record<string, { baseUrl: string; model: string }> = {
                     deepseek: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+                    'volcengine-deepseek': { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: '' },
                     doubao: { baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', model: '' },
                     openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-3.5-turbo' }
                   };
@@ -960,7 +984,8 @@ function App() {
                   });
                 }}
               >
-                <option value="deepseek">DeepSeek (推荐，便宜)</option>
+                <option value="deepseek">DeepSeek 官方 (推荐，便宜)</option>
+                <option value="volcengine-deepseek">火山引擎 DeepSeek</option>
                 <option value="doubao">豆包 (火山引擎)</option>
                 <option value="openai">OpenAI</option>
               </select>
@@ -972,11 +997,21 @@ function App() {
                 type="password"
                 value={llmConfig.apiKey}
                 onChange={(e) => updateConfig({ apiKey: e.target.value })}
-                placeholder={llmConfig.provider === 'deepseek' ? '输入DeepSeek API Key' : '输入API Key'}
+                placeholder={
+                  llmConfig.provider === 'deepseek' ? '输入DeepSeek API Key' :
+                  llmConfig.provider === 'volcengine-deepseek' ? '输入火山引擎 API Key' :
+                  llmConfig.provider === 'doubao' ? '输入火山引擎 API Key' :
+                  '输入API Key'
+                }
               />
               {llmConfig.provider === 'deepseek' && (
                 <small style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '4px', display: 'block' }}>
                   获取API Key: <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener" style={{ color: 'var(--accent)' }}>platform.deepseek.com</a>
+                </small>
+              )}
+              {(llmConfig.provider === 'volcengine-deepseek' || llmConfig.provider === 'doubao') && (
+                <small style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '4px', display: 'block' }}>
+                  获取API Key: <a href="https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey" target="_blank" rel="noopener" style={{ color: 'var(--accent)' }}>console.volcengine.com</a>
                 </small>
               )}
             </div>
@@ -988,6 +1023,13 @@ function App() {
                   <option value="deepseek-chat">deepseek-chat (对话，便宜)</option>
                   <option value="deepseek-reasoner">deepseek-reasoner (推理，贵)</option>
                 </select>
+              ) : llmConfig.provider === 'volcengine-deepseek' ? (
+                <input
+                  type="text"
+                  value={llmConfig.model}
+                  onChange={(e) => updateConfig({ model: e.target.value })}
+                  placeholder="输入Endpoint ID (如: ep-xxxxx)"
+                />
               ) : llmConfig.provider === 'doubao' ? (
                 <input
                   type="text"

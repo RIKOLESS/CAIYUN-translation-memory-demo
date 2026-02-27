@@ -4,7 +4,7 @@
  */
 
 import { splitTextIntoChunks, ChunkInfo, SplitOptions } from '../utils/textSplitter';
-import { translate, TargetLanguage } from './llmService';
+import { translate, TargetLanguage, TokenUsage, getTokenStats, resetTokenStats, TokenStats } from './llmService';
 import { getMemoryContext, learnFromTranslation, LearnResult } from './memoryAgent';
 import { getWorkMemory } from '../storage/indexedDB';
 
@@ -24,6 +24,10 @@ export interface RoundLog {
   error?: string;
   retried?: boolean;       // 是否重试过
   skipped?: boolean;       // 是否跳过（失败后）
+  tokenUsage?: {           // Token 使用
+    translation?: TokenUsage;
+    memory?: TokenUsage;
+  };
 }
 
 // 批量翻译结果
@@ -39,6 +43,7 @@ export interface BatchResult {
     round: number;
     message: string;
   };
+  tokenStats?: TokenStats;  // 总 Token 统计
 }
 
 // 批量翻译配置
@@ -93,6 +98,9 @@ export async function batchTranslate(
   controller: BatchController,
   onProgress?: ProgressCallback
 ): Promise<BatchResult> {
+  // 重置 token 统计
+  resetTokenStats();
+  
   const result: BatchResult = {
     status: 'running',
     totalChunks: 0,
@@ -136,6 +144,9 @@ export async function batchTranslate(
       // 获取翻译前的记忆状态
       const memoryBefore = await getMemoryStats(config.workId);
       
+      // 记录本轮开始时的 token 统计
+      const tokenStatsBefore = getTokenStats();
+      
       let translateSuccess = false;
       let translatedText = '';
       let lastError: string | undefined;
@@ -152,7 +163,8 @@ export async function batchTranslate(
             chunk.text,
             config.terminology,
             memoryContext,
-            config.targetLanguage
+            config.targetLanguage,
+            config.workId  // 火山引擎缓存用
           );
           
           translatedText = translateResult.translation;
@@ -212,6 +224,23 @@ export async function batchTranslate(
           }
         }
         
+        // 计算本轮的 token 使用
+        const tokenStatsAfter = getTokenStats();
+        const roundTokenUsage = {
+          translation: {
+            prompt_tokens: tokenStatsAfter.translation.prompt_tokens - tokenStatsBefore.translation.prompt_tokens,
+            completion_tokens: tokenStatsAfter.translation.completion_tokens - tokenStatsBefore.translation.completion_tokens,
+            total_tokens: tokenStatsAfter.translation.total_tokens - tokenStatsBefore.translation.total_tokens,
+            cached_tokens: tokenStatsAfter.translation.cached_tokens - tokenStatsBefore.translation.cached_tokens
+          },
+          memory: {
+            prompt_tokens: tokenStatsAfter.memory.prompt_tokens - tokenStatsBefore.memory.prompt_tokens,
+            completion_tokens: tokenStatsAfter.memory.completion_tokens - tokenStatsBefore.memory.completion_tokens,
+            total_tokens: tokenStatsAfter.memory.total_tokens - tokenStatsBefore.memory.total_tokens,
+            cached_tokens: tokenStatsAfter.memory.cached_tokens - tokenStatsBefore.memory.cached_tokens
+          }
+        };
+        
         // 记录日志
         const roundLog: RoundLog = {
           round: i + 1,
@@ -222,7 +251,8 @@ export async function batchTranslate(
           memoryAfter,
           learnedItems: retried ? [`⚠️ 重试后成功${lastError?.includes('重复') ? '（检测到重复循环）' : ''}`, ...learnedItems] : learnedItems,
           duration: Date.now() - roundStartTime,
-          retried
+          retried,
+          tokenUsage: roundTokenUsage
         };
         
         result.logs.push(roundLog);
@@ -278,6 +308,7 @@ export async function batchTranslate(
   }
   
   result.endTime = new Date();
+  result.tokenStats = getTokenStats();
   return result;
 }
 
@@ -365,6 +396,19 @@ export function formatLogsToText(
   lines.push('翻译完成');
   lines.push(`总耗时: ${(totalDuration / 1000 / 60).toFixed(1)} 分钟`);
   lines.push(`最终记忆: 角色 ${finalMemory.characters} 个, 映射 ${finalMemory.nameMappings} 条`);
+  
+  // Token 统计
+  if (result.tokenStats) {
+    const ts = result.tokenStats;
+    lines.push('');
+    lines.push('--- Token 统计 ---');
+    lines.push(`翻译Agent: 输入 ${ts.translation.prompt_tokens.toLocaleString()} | 输出 ${ts.translation.completion_tokens.toLocaleString()} | 缓存 ${ts.translation.cached_tokens.toLocaleString()} | 调用 ${ts.translation.calls} 次`);
+    lines.push(`记忆Agent: 输入 ${ts.memory.prompt_tokens.toLocaleString()} | 输出 ${ts.memory.completion_tokens.toLocaleString()} | 缓存 ${ts.memory.cached_tokens.toLocaleString()} | 调用 ${ts.memory.calls} 次`);
+    const totalTokens = ts.translation.total_tokens + ts.memory.total_tokens;
+    const totalCached = ts.translation.cached_tokens + ts.memory.cached_tokens;
+    lines.push(`总计: ${totalTokens.toLocaleString()} tokens (缓存命中 ${totalCached.toLocaleString()})`);
+  }
+  
   lines.push('========================================');
   
   return lines.join('\n');

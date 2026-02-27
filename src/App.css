@@ -1265,3 +1265,38 @@
   }
 }
 
+/* Token 统计 */
+.token-stats {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.token-stats-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.token-stats-row .token-label {
+  font-weight: 500;
+  color: var(--text-primary);
+  min-width: 80px;
+}
+
+.token-stats-row .cached {
+  color: var(--success);
+}
+
+.token-stats-total {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+

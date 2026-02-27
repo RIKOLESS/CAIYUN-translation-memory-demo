@@ -7,7 +7,7 @@ export interface LLMConfig {
   apiKey: string;
   model: string;
   baseUrl: string;
-  provider: 'deepseek' | 'doubao' | 'openai';
+  provider: 'deepseek' | 'volcengine-deepseek' | 'doubao' | 'openai';
 }
 
 export interface ChatMessage {
@@ -15,11 +15,47 @@ export interface ChatMessage {
   content: string;
 }
 
+// Token 使用信息
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;  // 缓存命中的 token
+}
+
+// Chat 响应（内部使用）
+interface ChatResponse {
+  content: string;
+  usage?: TokenUsage;
+}
+
+// Token 统计
+export interface TokenStats {
+  translation: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached_tokens: number;
+    calls: number;
+  };
+  memory: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached_tokens: number;
+    calls: number;
+  };
+}
+
 // 预设配置
 const PROVIDER_CONFIGS = {
   deepseek: {
     baseUrl: 'https://api.deepseek.com/v1',
     model: 'deepseek-chat'
+  },
+  'volcengine-deepseek': {
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    model: 'ep-xxxxxxxx'  // 需要用户填入endpoint ID
   },
   doubao: {
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
@@ -64,10 +100,264 @@ export function getProviderConfigs() {
   return PROVIDER_CONFIGS;
 }
 
+// Token 统计器
+let tokenStats: TokenStats = {
+  translation: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, calls: 0 },
+  memory: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, calls: 0 }
+};
+
+export function getTokenStats(): TokenStats {
+  return { ...tokenStats };
+}
+
+export function resetTokenStats(): void {
+  tokenStats = {
+    translation: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, calls: 0 },
+    memory: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0, calls: 0 }
+  };
+}
+
+// ============================================
+// 火山引擎 Responses API 缓存管理
+// ============================================
+
+// 火山引擎缓存存储（按 workId 和用途分别存储）
+interface VolcengineCacheEntry {
+  responseId: string;
+  systemPrompt: string;  // 用于检测 system prompt 是否变化
+  createdAt: number;
+}
+
+// 缓存存储：key = `${workId}_${type}` (type: 'translate' | 'memory')
+const volcengineCacheStore: Map<string, VolcengineCacheEntry> = new Map();
+
+// 获取缓存 key
+function getVolcengineCacheKey(workId: string, type: 'translate' | 'memory'): string {
+  return `${workId}_${type}`;
+}
+
+// 获取缓存的 response ID
+function getVolcengineCachedResponseId(workId: string, type: 'translate' | 'memory', currentSystemPrompt: string): string | null {
+  const key = getVolcengineCacheKey(workId, type);
+  const entry = volcengineCacheStore.get(key);
+  
+  if (!entry) return null;
+  
+  // 检查 system prompt 是否变化，变化则缓存失效
+  if (entry.systemPrompt !== currentSystemPrompt) {
+    volcengineCacheStore.delete(key);
+    return null;
+  }
+  
+  // 检查缓存是否过期（7天）
+  const maxAge = 7 * 24 * 60 * 60 * 1000;
+  if (Date.now() - entry.createdAt > maxAge) {
+    volcengineCacheStore.delete(key);
+    return null;
+  }
+  
+  return entry.responseId;
+}
+
+// 保存缓存的 response ID
+function setVolcengineCachedResponseId(workId: string, type: 'translate' | 'memory', responseId: string, systemPrompt: string): void {
+  const key = getVolcengineCacheKey(workId, type);
+  volcengineCacheStore.set(key, {
+    responseId,
+    systemPrompt,
+    createdAt: Date.now()
+  });
+}
+
+// 清除火山引擎缓存
+export function clearVolcengineCache(workId?: string): void {
+  if (workId) {
+    volcengineCacheStore.delete(getVolcengineCacheKey(workId, 'translate'));
+    volcengineCacheStore.delete(getVolcengineCacheKey(workId, 'memory'));
+  } else {
+    volcengineCacheStore.clear();
+  }
+}
+
+// 判断是否是火山引擎 provider
+function isVolcengineProvider(): boolean {
+  return config.provider === 'volcengine-deepseek' || config.provider === 'doubao';
+}
+
 /**
- * 调用LLM API进行对话
+ * 火山引擎 Responses API 调用（带缓存支持）
+ * 
+ * 火山引擎前缀缓存工作流程：
+ * 1. 首次请求：只发送 system prompt 创建缓存（不会生成输出）
+ * 2. 后续请求：使用 previous_response_id + user message 获取输出
  */
-export async function chat(messages: ChatMessage[]): Promise<string> {
+async function chatWithVolcengineResponses(
+  messages: ChatMessage[],
+  workId: string,
+  cacheType: 'translate' | 'memory'
+): Promise<ChatResponse> {
+  if (!config.apiKey) {
+    throw new Error('请先在设置中配置API Key');
+  }
+
+  // 提取消息
+  const systemMessage = messages.find(m => m.role === 'system');
+  const userMessage = messages.find(m => m.role === 'user');
+  const systemPrompt = systemMessage?.content || '';
+  
+  // 尝试获取已有的缓存 ID
+  let cachedResponseId = getVolcengineCachedResponseId(workId, cacheType, systemPrompt);
+  
+  // 如果没有缓存，先创建缓存（只发送 system prompt）
+  if (!cachedResponseId) {
+    console.log(`[火山引擎] 创建前缀缓存: ${cacheType}`);
+    
+    const cacheResponse = await fetch(`${config.baseUrl}/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`
+      },
+      body: JSON.stringify({
+        model: config.model,
+        input: [
+          {
+            role: 'system',
+            content: systemPrompt
+          }
+        ],
+        caching: { type: 'enabled', prefix: true },
+        thinking: { type: 'disabled' }
+      })
+    });
+
+    if (!cacheResponse.ok) {
+      const errorText = await cacheResponse.text();
+      console.warn(`[火山引擎] 创建缓存失败，回退到标准API: ${errorText}`);
+      // 回退到标准 API
+      return chatWithStandardAPI(messages);
+    }
+
+    const cacheData = await cacheResponse.json();
+    
+    if (cacheData.id) {
+      cachedResponseId = cacheData.id;
+      setVolcengineCachedResponseId(workId, cacheType, cacheData.id, systemPrompt);
+      console.log(`[火山引擎] 缓存创建成功: ${cacheData.id}`);
+    } else {
+      console.warn('[火山引擎] 缓存创建失败，回退到标准API');
+      return chatWithStandardAPI(messages);
+    }
+  }
+  
+  // 使用缓存发送实际请求（只发送 user message）
+  console.log(`[火山引擎] 使用缓存请求: ${cacheType}`);
+  
+  const response = await fetch(`${config.baseUrl}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      previous_response_id: cachedResponseId,
+      input: [
+        {
+          role: 'user',
+          content: userMessage?.content || ''
+        }
+      ],
+      caching: { type: 'enabled' },
+      thinking: { type: 'disabled' }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    // 如果是缓存相关错误，清除缓存并重试
+    if (errorText.includes('previous_response_id') || errorText.includes('not found') || errorText.includes('expired')) {
+      console.warn('[火山引擎] 缓存失效，清除缓存并重试');
+      volcengineCacheStore.delete(getVolcengineCacheKey(workId, cacheType));
+      return chatWithVolcengineResponses(messages, workId, cacheType);
+    }
+    throw new Error(`API调用失败: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  
+  // 防护：检查响应数据结构
+  if (!data) {
+    throw new Error('API返回空响应');
+  }
+  
+  // 更新缓存 ID（Session 缓存会生成新 ID）
+  if (data.id) {
+    setVolcengineCachedResponseId(workId, cacheType, data.id, systemPrompt);
+  }
+  
+  // 提取响应内容（Responses API 的格式不同）
+  let content = '';
+  if (data.output && Array.isArray(data.output)) {
+    // Responses API 格式: output[].content[].text
+    for (const item of data.output) {
+      if (item.content && Array.isArray(item.content)) {
+        for (const c of item.content) {
+          if (c.text) {
+            content += c.text;
+          }
+        }
+      }
+    }
+  } else if (data.choices && Array.isArray(data.choices)) {
+    // 兼容 Chat Completions 格式
+    content = data.choices[0]?.message?.content || '';
+  }
+  
+  if (!content) {
+    // 如果仍然没有内容，可能是缓存问题，清除并回退
+    console.warn(`[火山引擎] 响应无内容，清除缓存并回退到标准API`);
+    volcengineCacheStore.delete(getVolcengineCacheKey(workId, cacheType));
+    return chatWithStandardAPI(messages);
+  }
+  
+  // 提取 token 使用信息（火山引擎格式）
+  const usage: TokenUsage | undefined = data.usage ? {
+    prompt_tokens: data.usage.input_tokens || data.usage.prompt_tokens || 0,
+    completion_tokens: data.usage.output_tokens || data.usage.completion_tokens || 0,
+    total_tokens: data.usage.total_tokens || 0,
+    // 火山引擎：input_tokens_details.cached_tokens
+    cached_tokens: data.usage.input_tokens_details?.cached_tokens || 0
+  } : undefined;
+  
+  return {
+    content,
+    usage
+  };
+}
+
+/**
+ * 调用LLM API进行对话（内部使用，返回完整响应含 token 信息）
+ * @param messages 消息列表
+ * @param cacheOptions 火山引擎缓存选项（仅火山引擎 provider 生效）
+ */
+async function chatWithUsage(
+  messages: ChatMessage[],
+  cacheOptions?: { workId: string; cacheType: 'translate' | 'memory' }
+): Promise<ChatResponse> {
+  // 火山引擎 provider 使用 Responses API 以支持缓存
+  if (isVolcengineProvider() && cacheOptions) {
+    return chatWithVolcengineResponses(messages, cacheOptions.workId, cacheOptions.cacheType);
+  }
+  
+  // 其他 provider 使用标准 Chat Completions API
+  return chatWithStandardAPI(messages);
+}
+
+/**
+ * 标准 Chat Completions API 调用（DeepSeek/OpenAI 等）
+ */
+async function chatWithStandardAPI(messages: ChatMessage[]): Promise<ChatResponse> {
   if (!config.apiKey) {
     throw new Error('请先在设置中配置API Key');
   }
@@ -101,7 +391,27 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
     throw new Error(`API返回格式异常: ${JSON.stringify(data).slice(0, 200)}`);
   }
   
-  return data.choices[0]?.message?.content || '';
+  // 提取 token 使用信息
+  const usage: TokenUsage | undefined = data.usage ? {
+    prompt_tokens: data.usage.prompt_tokens || 0,
+    completion_tokens: data.usage.completion_tokens || 0,
+    total_tokens: data.usage.total_tokens || 0,
+    // DeepSeek 使用 prompt_cache_hit_tokens，其他可能用 cached_tokens
+    cached_tokens: data.usage.prompt_cache_hit_tokens || data.usage.cached_tokens || 0
+  } : undefined;
+  
+  return {
+    content: data.choices[0]?.message?.content || '',
+    usage
+  };
+}
+
+/**
+ * 调用LLM API进行对话（兼容旧接口）
+ */
+export async function chat(messages: ChatMessage[]): Promise<string> {
+  const response = await chatWithUsage(messages);
+  return response.content;
 }
 
 // 翻译用的角色信息（增强版）
@@ -384,6 +694,11 @@ function buildContextSection(
 /**
  * 翻译文本
  * 使用 Prompt 路由：根据目标语言选择对应语言的 Prompt
+ * @param text 待翻译文本
+ * @param terminology 术语库
+ * @param memory 记忆上下文
+ * @param targetLanguage 目标语言
+ * @param workId 作品ID（用于火山引擎缓存）
  */
 export async function translate(
   text: string,
@@ -393,8 +708,9 @@ export async function translate(
     nameMappings: Record<string, string>;
     style?: string;
   },
-  targetLanguage: TargetLanguage = 'zh'
-): Promise<{ translation: string; rawResponse: string }> {
+  targetLanguage: TargetLanguage = 'zh',
+  workId: string = 'default'
+): Promise<{ translation: string; rawResponse: string; usage?: TokenUsage }> {
   
   // Prompt 路由：根据目标语言选择对应的 Prompt
   let systemPrompt: string;
@@ -421,11 +737,23 @@ export async function translate(
     { role: 'user', content: userPrompt }
   ];
 
-  const response = await chat(messages);
+  // 火山引擎 provider 传递缓存选项
+  const cacheOptions = isVolcengineProvider() ? { workId, cacheType: 'translate' as const } : undefined;
+  const response = await chatWithUsage(messages, cacheOptions);
+  
+  // 累加翻译 token 统计
+  if (response.usage) {
+    tokenStats.translation.prompt_tokens += response.usage.prompt_tokens;
+    tokenStats.translation.completion_tokens += response.usage.completion_tokens;
+    tokenStats.translation.total_tokens += response.usage.total_tokens;
+    tokenStats.translation.cached_tokens += response.usage.cached_tokens;
+    tokenStats.translation.calls++;
+  }
   
   return {
-    translation: response.trim(),
-    rawResponse: response
+    translation: response.content.trim(),
+    rawResponse: response.content,
+    usage: response.usage
   };
 }
 
@@ -453,11 +781,17 @@ export interface ExtractedMemory {
   }>;
   // 风格
   style?: string;
+  // Token 使用
+  usage?: TokenUsage;
 }
 
 /**
  * 提取记忆信息（记忆Agent的学习功能）- 增强版
  * 自动识别多重身份和名称归属
+ * @param originalText 原文
+ * @param translatedText 译文
+ * @param existingMemory 已有记忆
+ * @param workId 作品ID（用于火山引擎缓存）
  */
 export async function extractMemory(
   originalText: string,
@@ -466,7 +800,8 @@ export async function extractMemory(
     characters: Record<string, unknown>;
     nameMappings: Record<string, string>;
     aliasIndex?: Record<string, string>;
-  }
+  },
+  workId: string = 'default'
 ): Promise<ExtractedMemory> {
   
   const systemPrompt = `你是专业的小说信息提取专家，擅长分析角色身份和名称关系。
@@ -545,10 +880,21 @@ ${translatedText}`;
   ];
 
   try {
-    const response = await chat(messages);
+    // 火山引擎 provider 传递缓存选项
+    const cacheOptions = isVolcengineProvider() ? { workId, cacheType: 'memory' as const } : undefined;
+    const response = await chatWithUsage(messages, cacheOptions);
+    
+    // 累加记忆 token 统计
+    if (response.usage) {
+      tokenStats.memory.prompt_tokens += response.usage.prompt_tokens;
+      tokenStats.memory.completion_tokens += response.usage.completion_tokens;
+      tokenStats.memory.total_tokens += response.usage.total_tokens;
+      tokenStats.memory.cached_tokens += response.usage.cached_tokens;
+      tokenStats.memory.calls++;
+    }
     
     // 尝试解析JSON
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    const jsonMatch = response.content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       return {
@@ -556,7 +902,8 @@ ${translatedText}`;
         newNameMappings: parsed.newNameMappings || {},
         identityMerges: parsed.identityMerges || [],
         nameVariants: parsed.nameVariants || [],
-        style: parsed.style
+        style: parsed.style,
+        usage: response.usage
       };
     }
   } catch (error) {

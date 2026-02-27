@@ -299,7 +299,8 @@ export async function learnFromTranslation(
           characters: existingMemory.characters,
           nameMappings: existingMemory.nameMappings,
           aliasIndex: existingMemory.aliasIndex
-        }
+        },
+        workId  // 火山引擎缓存用
       );
       
       newCharacters = extracted.newCharacters;
