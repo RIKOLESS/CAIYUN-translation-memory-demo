@@ -437,9 +437,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 检测是否存在重复循环（同一字符连续出现超过30次）
+ * 检测是否存在重复循环
+ * 覆盖以下情况：
+ * 1. 连续相同字符 >30 次：我我我我我...
+ * 2. 空格/换行分隔的重复 >15 次：我 我 我 我... 或 我\n我\n我\n我...
  */
 function hasRepetitionLoop(text: string): boolean {
-  return /(.)\1{30,}/.test(text);
+  // 1. 原有检测：连续相同字符 >30 次
+  if (/(.)\1{30,}/.test(text)) return true;
+  
+  // 2. 去除空白字符后，连续相同字符 >30 次
+  const textNoWhitespace = text.replace(/\s/g, '');
+  if (/(.)\1{30,}/.test(textNoWhitespace)) return true;
+  
+  // 3. 相同字符+空白的模式重复 >15 次（如 "我 我 我 我" 或 "我\n我\n我"）
+  if (/(.)[\s]+\1(?:[\s]+\1){14,}/.test(text)) return true;
+  
+  return false;
 }
 

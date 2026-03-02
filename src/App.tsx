@@ -26,6 +26,7 @@ import {
   BatchController
 } from './services/batchTranslator';
 import { previewSplit } from './utils/textSplitter';
+import { parseFile, getSupportedFileTypes } from './utils/fileParser';
 import './App.css';
 
 function App() {
@@ -432,18 +433,19 @@ function App() {
             {/* 输入区域 */}
             <div className="batch-input-section">
               <div className="batch-input-header">
-                <label>原文（粘贴全文或上传txt文件）</label>
+                <label>原文（粘贴全文或上传文件）</label>
                 <input
                   type="file"
-                  accept=".txt"
-                  onChange={(e) => {
+                  accept={getSupportedFileTypes()}
+                  onChange={async (e) => {
                     const file = e.target.files?.[0];
                     if (file) {
-                      const reader = new FileReader();
-                      reader.onload = (event) => {
-                        setBatchInputText(event.target?.result as string || '');
-                      };
-                      reader.readAsText(file);
+                      try {
+                        const text = await parseFile(file);
+                        setBatchInputText(text);
+                      } catch (err) {
+                        alert(`文件解析失败: ${err instanceof Error ? err.message : '未知错误'}`);
+                      }
                     }
                   }}
                   style={{ display: 'none' }}
@@ -453,7 +455,7 @@ function App() {
                   className="upload-btn"
                   onClick={() => document.getElementById('batch-file-input')?.click()}
                 >
-                  📁 上传txt文件
+                  📁 上传文件 (TXT/PDF/EPUB)
                 </button>
               </div>
               <textarea
