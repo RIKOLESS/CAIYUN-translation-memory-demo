@@ -23,7 +23,8 @@ import {
   BatchResult,
   BatchStatus,
   RoundLog,
-  BatchController
+  BatchController,
+  StreamCallback
 } from './services/batchTranslator';
 import { previewSplit } from './utils/textSplitter';
 import { parseFile, getSupportedFileTypes } from './utils/fileParser';
@@ -71,6 +72,8 @@ function App() {
   const [batchLogs, setBatchLogs] = useState<RoundLog[]>([]);
   const batchControllerRef = useRef<BatchController | null>(null);
   const [chunkSizeLimit, setChunkSizeLimit] = useState(2000); // 每轮字符上限
+  const [streamingText, setStreamingText] = useState(''); // 流式输出的当前文本
+  const [isStreaming, setIsStreaming] = useState(false); // 是否正在流式输出
 
   // 初始化
   useEffect(() => {
@@ -208,6 +211,8 @@ function App() {
     setBatchProgress({ current: 0, total: 0 });
     setBatchLogs([]);
     setBatchCurrentChunk('');
+    setStreamingText('');
+    setIsStreaming(false);
 
     try {
       const result = await batchTranslate(
@@ -224,15 +229,17 @@ function App() {
           }
         },
         controller,
-        // 进度回调
+        // 进度回调（轮次完成时，包含记忆学习结果）
         (current, total, chunk, translation, log) => {
           setBatchProgress({ current, total });
           setBatchCurrentChunk(chunk.text);
           setBatchLogs(prev => [...prev, log]);
+          // 注意：translatedText 已在 onStream(isComplete=true) 时更新
+          // 这里只更新日志和 completedChunks
           setBatchResult(prev => prev ? {
             ...prev,
             completedChunks: current,
-            translatedText: prev.translatedText + (prev.translatedText ? '\n\n' : '') + translation
+            logs: [...prev.logs, log]
           } : {
             status: 'running',
             totalChunks: total,
@@ -245,6 +252,30 @@ function App() {
           // 刷新记忆显示
           loadMemory();
           loadAllMemories();
+        },
+        // 流式输出回调（实时更新）
+        (current, total, partialTranslation, isComplete) => {
+          setBatchProgress({ current, total });
+          setIsStreaming(!isComplete);
+          
+          if (isComplete) {
+            // 翻译完成时，立即将译文累积到 batchResult（不等记忆学习）
+            setStreamingText('');
+            setBatchResult(prev => prev ? {
+              ...prev,
+              translatedText: prev.translatedText + (prev.translatedText ? '\n\n' : '') + partialTranslation
+            } : {
+              status: 'running',
+              totalChunks: total,
+              completedChunks: current,
+              translatedText: partialTranslation,
+              logs: [],
+              startTime: new Date()
+            });
+          } else {
+            // 流式输出中，更新当前流式文本
+            setStreamingText(partialTranslation);
+          }
         }
       );
 
@@ -672,25 +703,36 @@ function App() {
               </div>
             )}
 
-            {/* 译文输出 */}
-            {batchResult && batchResult.translatedText && (
+            {/* 译文输出（支持流式显示） */}
+            {(batchResult?.translatedText || isStreaming || batchStatus === 'running') && (
               <div className="batch-output-section">
                 <div className="batch-output-header">
-                  <h4>译文输出</h4>
-                  <button
-                    className="download-btn"
-                    onClick={() => downloadTextFile(
-                      batchResult.translatedText,
-                      `${workId}-translation-${targetLanguage}.txt`
-                    )}
-                  >
-                    📥 下载译文.txt
-                  </button>
+                  <h4>
+                    译文输出
+                    {isStreaming && <span className="streaming-indicator"> ✍️ 翻译中...</span>}
+                  </h4>
+                  {batchResult?.translatedText && !isStreaming && (
+                    <button
+                      className="download-btn"
+                      onClick={() => downloadTextFile(
+                        batchResult.translatedText,
+                        `${workId}-translation-${targetLanguage}.txt`
+                      )}
+                    >
+                      📥 下载译文.txt
+                    </button>
+                  )}
                 </div>
                 <textarea
-                  value={batchResult.translatedText}
+                  value={
+                    // 显示已完成的翻译 + 当前流式输出
+                    (batchResult?.translatedText || '') + 
+                    (isStreaming && streamingText ? (batchResult?.translatedText ? '\n\n' : '') + streamingText : '')
+                  }
+                  placeholder={batchStatus === 'running' && !batchResult?.translatedText && !streamingText ? '正在准备翻译...' : ''}
                   readOnly
                   rows={10}
+                  className={isStreaming ? 'streaming' : ''}
                 />
               </div>
             )}
@@ -723,7 +765,15 @@ function App() {
                       <div className="log-header">
                         <span className="log-round">第 {log.round} 轮</span>
                         <span className="log-time">{log.timestamp.toLocaleTimeString()}</span>
-                        <span className="log-duration">{(log.duration / 1000).toFixed(1)}s</span>
+                        <span className="log-duration">
+                          {(log.duration / 1000).toFixed(1)}s
+                          {log.translateDuration !== undefined && (
+                            <span className="log-duration-detail">
+                              (翻译:{(log.translateDuration / 1000).toFixed(1)}s
+                              {log.memoryDuration !== undefined && ` 记忆:${(log.memoryDuration / 1000).toFixed(1)}s`})
+                            </span>
+                          )}
+                        </span>
                       </div>
                       <div className="log-stats">
                         <span>输入: {log.inputChars}字符</span>

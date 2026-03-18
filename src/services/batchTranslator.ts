@@ -4,7 +4,7 @@
  */
 
 import { splitTextIntoChunks, ChunkInfo, SplitOptions } from '../utils/textSplitter';
-import { translate, TargetLanguage, TokenUsage, getTokenStats, resetTokenStats, TokenStats } from './llmService';
+import { translate, translateWithStream, TargetLanguage, TokenUsage, getTokenStats, resetTokenStats, TokenStats } from './llmService';
 import { getMemoryContext, learnFromTranslation, LearnResult } from './memoryAgent';
 import { getWorkMemory } from '../storage/indexedDB';
 
@@ -20,7 +20,9 @@ export interface RoundLog {
   memoryBefore: { characters: number; nameMappings: number };
   memoryAfter: { characters: number; nameMappings: number };
   learnedItems: string[];  // AI学习日志
-  duration: number;        // 耗时（毫秒）
+  duration: number;        // 总耗时（毫秒）
+  translateDuration?: number;  // 翻译Agent耗时（毫秒）
+  memoryDuration?: number;     // 记忆Agent耗时（毫秒）
   error?: string;
   retried?: boolean;       // 是否重试过
   skipped?: boolean;       // 是否跳过（失败后）
@@ -64,6 +66,14 @@ export type ProgressCallback = (
   log: RoundLog
 ) => void;
 
+// 流式输出回调（实时更新翻译文本）
+export type StreamCallback = (
+  current: number,
+  total: number,
+  partialTranslation: string,
+  isComplete: boolean
+) => void;
+
 // 控制器（用于暂停/停止）
 export interface BatchController {
   pause: () => void;
@@ -96,7 +106,8 @@ export async function batchTranslate(
   text: string,
   config: BatchConfig,
   controller: BatchController,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  onStream?: StreamCallback
 ): Promise<BatchResult> {
   // 重置 token 统计
   resetTokenStats();
@@ -151,6 +162,7 @@ export async function batchTranslate(
       let translatedText = '';
       let lastError: string | undefined;
       let retried = false;
+      let translateDuration = 0;  // 翻译Agent耗时
       
       // 重试逻辑
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -158,16 +170,35 @@ export async function batchTranslate(
           // 获取相关记忆（智能过滤）
           const memoryContext = await getMemoryContext(config.workId, chunk.text);
           
-          // 执行翻译
-          const translateResult = await translate(
-            chunk.text,
-            config.terminology,
-            memoryContext,
-            config.targetLanguage,
-            config.workId  // 火山引擎缓存用
-          );
+          // 执行翻译（计时）
+          const translateStartTime = Date.now();
           
-          translatedText = translateResult.translation;
+          // 使用流式翻译（如果有回调）
+          if (onStream) {
+            const translateResult = await translateWithStream(
+              chunk.text,
+              config.terminology,
+              memoryContext,
+              config.targetLanguage,
+              (chunkText, fullContent) => {
+                // 实时回调流式内容
+                onStream(i + 1, chunks.length, fullContent, false);
+              }
+            );
+            translatedText = translateResult.translation;
+          } else {
+            // 非流式翻译
+            const translateResult = await translate(
+              chunk.text,
+              config.terminology,
+              memoryContext,
+              config.targetLanguage,
+              config.workId
+            );
+            translatedText = translateResult.translation;
+          }
+          
+          translateDuration = Date.now() - translateStartTime;
           
           // 检测重复循环（>30个连续相同字符）
           if (hasRepetitionLoop(translatedText)) {
@@ -202,20 +233,29 @@ export async function batchTranslate(
       // 处理结果
       let learnedItems: string[] = [];
       let memoryAfter = memoryBefore;
+      let memoryDuration = 0;  // 记忆Agent耗时
       
       if (translateSuccess) {
         // 翻译成功
         translatedParts.push(translatedText);
         
-        // 学习新内容
+        // 🔥 翻译完成后立即显示结果（不等记忆学习）
+        result.translatedText = translatedParts.join('\n\n');
+        if (onStream) {
+          onStream(i + 1, chunks.length, translatedText, true);
+        }
+        
+        // 学习新内容（计时）
         if (config.enableLearning) {
           try {
+            const memoryStartTime = Date.now();
             const learnResult = await learnFromTranslation(
               config.workId,
               chunk.text,
               translatedText,
               { useAI: true }
             );
+            memoryDuration = Date.now() - memoryStartTime;
             learnedItems = learnResult.logs;
             memoryAfter = await getMemoryStats(config.workId);
           } catch (learnError) {
@@ -251,6 +291,8 @@ export async function batchTranslate(
           memoryAfter,
           learnedItems: retried ? [`⚠️ 重试后成功${lastError?.includes('重复') ? '（检测到重复循环）' : ''}`, ...learnedItems] : learnedItems,
           duration: Date.now() - roundStartTime,
+          translateDuration,
+          memoryDuration: config.enableLearning ? memoryDuration : undefined,
           retried,
           tokenUsage: roundTokenUsage
         };
@@ -360,7 +402,19 @@ export function formatLogsToText(
     lines.push(`=== 第 ${log.round} 轮 (${log.round}/${result.totalChunks}) ${statusIcon} ===`);
     lines.push(`[${log.timestamp.toLocaleTimeString()}] 输入: ${log.inputChars} 字符`);
     lines.push(`[${log.timestamp.toLocaleTimeString()}] 输出: ${log.outputChars} 字符`);
-    lines.push(`[${log.timestamp.toLocaleTimeString()}] 耗时: ${(log.duration / 1000).toFixed(1)}s`);
+    
+    // 详细耗时统计
+    const translateTime = log.translateDuration ? `翻译: ${(log.translateDuration / 1000).toFixed(1)}s` : '';
+    const memoryTime = log.memoryDuration !== undefined ? `记忆: ${(log.memoryDuration / 1000).toFixed(1)}s` : '';
+    const otherTime = log.translateDuration ? log.duration - log.translateDuration - (log.memoryDuration || 0) : 0;
+    const otherTimeStr = otherTime > 100 ? `其他: ${(otherTime / 1000).toFixed(1)}s` : '';
+    
+    const timeParts = [translateTime, memoryTime, otherTimeStr].filter(Boolean);
+    if (timeParts.length > 0) {
+      lines.push(`[${log.timestamp.toLocaleTimeString()}] 耗时: ${(log.duration / 1000).toFixed(1)}s (${timeParts.join(' | ')})`);
+    } else {
+      lines.push(`[${log.timestamp.toLocaleTimeString()}] 耗时: ${(log.duration / 1000).toFixed(1)}s`);
+    }
     
     if (log.learnedItems.length > 0) {
       lines.push(`[${log.timestamp.toLocaleTimeString()}] 学习记忆:`);

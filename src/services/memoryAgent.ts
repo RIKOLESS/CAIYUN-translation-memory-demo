@@ -310,7 +310,7 @@ export async function learnFromTranslation(
       // 处理多重身份识别
       if (extracted.identityMerges && extracted.identityMerges.length > 0) {
         for (const merge of extracted.identityMerges) {
-          logs.push(`🔗 识别多重身份: ${merge.primaryName} = ${merge.aliases.join(', ')} (${merge.reason})`);
+          logs.push(`🔗 识别多重身份: ${merge.primaryName} = ${merge.aliases.join(', ')}`);
           identityMerges.push({
             primaryName: merge.primaryName,
             aliases: merge.aliases

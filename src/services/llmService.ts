@@ -407,6 +407,93 @@ async function chatWithStandardAPI(messages: ChatMessage[]): Promise<ChatRespons
 }
 
 /**
+ * 流式 Chat API 调用（支持实时输出）
+ * @param messages 消息列表
+ * @param onChunk 每次收到新内容时的回调
+ * @returns 完整响应
+ */
+export async function chatWithStream(
+  messages: ChatMessage[],
+  onChunk: (chunk: string, fullContent: string) => void
+): Promise<ChatResponse> {
+  if (!config.apiKey) {
+    throw new Error('请先在设置中配置API Key');
+  }
+
+  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: messages,
+      temperature: 0.3,
+      max_tokens: 4096,
+      stream: true  // 启用流式输出
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`API调用失败: ${response.status} - ${errorText}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('无法获取响应流');
+  }
+
+  const decoder = new TextDecoder();
+  let fullContent = '';
+  let usage: TokenUsage | undefined;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === 'data: [DONE]') continue;
+        if (!trimmed.startsWith('data: ')) continue;
+
+        try {
+          const data = JSON.parse(trimmed.slice(6));
+          
+          // 提取内容增量
+          const delta = data.choices?.[0]?.delta?.content;
+          if (delta) {
+            fullContent += delta;
+            onChunk(delta, fullContent);
+          }
+
+          // 尝试提取 usage（通常在最后一个消息中）
+          if (data.usage) {
+            usage = {
+              prompt_tokens: data.usage.prompt_tokens || 0,
+              completion_tokens: data.usage.completion_tokens || 0,
+              total_tokens: data.usage.total_tokens || 0,
+              cached_tokens: data.usage.prompt_cache_hit_tokens || data.usage.cached_tokens || 0
+            };
+          }
+        } catch {
+          // 忽略解析错误
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return { content: fullContent, usage };
+}
+
+/**
  * 调用LLM API进行对话（兼容旧接口）
  */
 export async function chat(messages: ChatMessage[]): Promise<string> {
@@ -758,6 +845,71 @@ export async function translate(
 }
 
 /**
+ * 流式翻译文本（支持实时输出）
+ * @param text 待翻译文本
+ * @param terminology 术语库
+ * @param memory 记忆上下文
+ * @param targetLanguage 目标语言
+ * @param onChunk 流式输出回调
+ * @returns 翻译结果
+ */
+export async function translateWithStream(
+  text: string,
+  terminology: Record<string, string>,
+  memory: {
+    characters: Record<string, TranslateCharacterInfo>;
+    nameMappings: Record<string, string>;
+    style?: string;
+  },
+  targetLanguage: TargetLanguage = 'zh',
+  onChunk: (chunk: string, fullContent: string) => void
+): Promise<{ translation: string; rawResponse: string; usage?: TokenUsage }> {
+  
+  // Prompt 路由：根据目标语言选择对应的 Prompt
+  let systemPrompt: string;
+  let userPrompt: string;
+  
+  switch (targetLanguage) {
+    case 'en':
+      systemPrompt = buildEnglishPrompt(terminology, memory);
+      userPrompt = `Please translate the following text into English:\n\n${text}`;
+      break;
+    case 'ja':
+      systemPrompt = buildJapanesePrompt(terminology, memory);
+      userPrompt = `以下のテキストを日本語に翻訳してください：\n\n${text}`;
+      break;
+    case 'zh':
+    default:
+      systemPrompt = buildChinesePrompt(terminology, memory);
+      userPrompt = `请翻译以下内容：\n\n${text}`;
+      break;
+  }
+
+  const messages: ChatMessage[] = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt }
+  ];
+
+  // 使用流式 API（注意：火山引擎目前不支持流式，会自动降级）
+  const response = await chatWithStream(messages, onChunk);
+  
+  // 累加翻译 token 统计
+  if (response.usage) {
+    tokenStats.translation.prompt_tokens += response.usage.prompt_tokens;
+    tokenStats.translation.completion_tokens += response.usage.completion_tokens;
+    tokenStats.translation.total_tokens += response.usage.total_tokens;
+    tokenStats.translation.cached_tokens += response.usage.cached_tokens;
+    tokenStats.translation.calls++;
+  }
+  
+  return {
+    translation: response.content.trim(),
+    rawResponse: response.content,
+    usage: response.usage
+  };
+}
+
+/**
  * 增强版记忆提取结果
  */
 export interface ExtractedMemory {
@@ -769,7 +921,7 @@ export interface ExtractedMemory {
   identityMerges: Array<{
     primaryName: string;      // 主名称/真名
     aliases: string[];        // 别名列表
-    reason: string;           // 识别原因
+    reason?: string;          // 识别原因（可选，已从输出中移除以节省token）
   }>;
   // 【新增】名称变体（带归属）
   nameVariants: Array<{
@@ -777,7 +929,7 @@ export interface ExtractedMemory {
     translation: string;      // 译文（如：零）
     belongsTo: string;        // 属于哪个角色
     type: 'fullName' | 'firstName' | 'lastName' | 'nickname' | 'codename' | 'title';
-    reason: string;           // 识别原因
+    reason?: string;          // 识别原因（可选，已从输出中移除以节省token）
   }>;
   // 风格
   style?: string;
@@ -844,8 +996,7 @@ ${JSON.stringify(existingMemory, null, 2)}
   "identityMerges": [
     {
       "primaryName": "真名/主名称",
-      "aliases": ["别名1", "别名2"],
-      "reason": "识别原因"
+      "aliases": ["别名1", "别名2"]
     }
   ],
   "nameVariants": [
@@ -853,8 +1004,7 @@ ${JSON.stringify(existingMemory, null, 2)}
       "original": "原文名",
       "translation": "译文名",
       "belongsTo": "所属角色主名称",
-      "type": "firstName/lastName/nickname/codename/title",
-      "reason": "识别原因"
+      "type": "firstName/lastName/nickname/codename/title"
     }
   ],
   "style": "文章风格（可选）"

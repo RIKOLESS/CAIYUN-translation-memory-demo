@@ -1136,6 +1136,23 @@
   min-height: 200px;
 }
 
+.batch-output-section textarea.streaming {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.streaming-indicator {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: normal;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* 执行日志 */
 .batch-logs {
   display: flex;
@@ -1193,6 +1210,12 @@
 
 .log-duration {
   color: var(--text-secondary);
+}
+
+.log-duration-detail {
+  color: var(--text-muted, #888);
+  font-size: 0.85em;
+  margin-left: 4px;
 }
 
 .log-stats {
